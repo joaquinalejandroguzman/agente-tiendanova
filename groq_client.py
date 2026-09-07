@@ -1,5 +1,6 @@
 """Cliente minimo para hablar con la API de Groq (compatible con OpenAI)."""
 
+import contextlib
 import logging
 import os
 import re
@@ -184,11 +185,21 @@ def chat(
                 "de tokens por minuto del plan gratuito.",
             ) from exc
         if resp.status_code == 413:
-            # El usuario si puede resolverlo, asi que se le dice como.
+            # Groq devuelve 413 cuando la consulta supera el limite de tokens
+            # POR MINUTO del plan, no la ventana de contexto del modelo. El
+            # cuerpo lo dice explicitamente: "on tokens per minute (TPM):
+            # Limit 8000, Requested 9905". Es transitorio, igual que el 429,
+            # asi que al usuario se le dice lo unico util: esperar.
+            detalle = ""
+            # El cuerpo puede no ser JSON valido; en ese caso el detalle
+            # queda vacio y el mensaje al usuario no cambia.
+            with contextlib.suppress(ValueError):
+                detalle = str(resp.json().get("error", {}).get("message", ""))[:300]
             raise _fallar(
-                "La conversación se hizo muy larga. Empezá un chat nuevo para seguir.",
-                f"Groq devolvió 413 con el modelo '{model}': el historial más "
-                "los documentos superaron el límite de contexto.",
+                "La consulta es más grande de lo que permite el plan gratuito en "
+                "este momento. Esperá un minuto y volvé a preguntar.",
+                f"Groq devolvió 413 con el modelo '{model}': la consulta supera "
+                f"el límite de tokens por minuto del plan. {detalle}",
             ) from exc
         raise _fallar(
             _MENSAJE_CAIDO,
