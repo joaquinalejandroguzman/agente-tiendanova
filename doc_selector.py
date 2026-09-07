@@ -25,10 +25,24 @@ from pdf_utils import Document
 # Un documento puntuado: (nombre, texto, score de relevancia).
 ScoredDocument = tuple[str, str, float]
 
-# ~3.500 tokens de documentos. Deja lugar para el system prompt (~700
-# tokens), el historial recortado y la respuesta, sin pasarse del limite de
-# 8.000 tokens por minuto del modelo mas chico que podriamos llegar a usar.
-MAX_CONTEXT_CHARS = 14000
+# Presupuesto de contexto, calibrado contra el limite real del plan gratuito.
+#
+# El valor anterior, 14.000, asumia la regla de cuatro caracteres por token y
+# estimaba unos 3.500 tokens de documentos. Medido contra la API, una sola
+# pregunta sobre la lista de precios pedia 9.905 tokens y Groq la rechazaba
+# con un 413:
+#
+#   Request too large for model openai/gpt-oss-120b ... service tier
+#   on_demand on tokens per minute (TPM): Limit 8000, Requested 9905
+#
+# La causa es que una tabla en markdown tokeniza mucho peor que la prosa: los
+# separadores de columna y los numeros sueltos se cuentan casi de a uno, y la
+# relacion real ronda 1,5 caracteres por token en vez de 4.
+#
+# 9.000 caracteres de tabla son unos 6.000 tokens. Sumados al system prompt,
+# al historial recortado y a la respuesta, entran debajo del techo de 8.000
+# tokens por minuto con margen. Para prosa el margen es mayor todavia.
+MAX_CONTEXT_CHARS = 9000
 
 # Los terminos del titulo del documento pesan mas que los del cuerpo: que la
 # pregunta diga "envio" y el documento se llame "Guia de Tiempos y Costos de
