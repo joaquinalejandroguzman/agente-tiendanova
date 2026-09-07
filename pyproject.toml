@@ -43,7 +43,7 @@ Repository = "https://github.com/joaquinalejandroguzman/cotejo"
 # lista se reemplaza por descubrimiento automatico cuando los modulos pasen a
 # vivir dentro de un paquete.
 [tool.setuptools]
-py-modules = ["app", "router", "doc_selector", "groq_client", "pdf_utils", "tabla_utils", "ingesta", "bm25", "historial"]
+py-modules = ["app", "router", "doc_selector", "groq_client", "pdf_utils", "tabla_utils", "ingesta", "bm25", "historial", "resumen"]
 
 # ---------------------------------------------------------------------------
 # Ruff: linter y formateador (reemplaza a flake8, black e isort)
@@ -86,7 +86,7 @@ ignore = [
 "tests/**" = ["ARG001", "ARG002"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["app", "router", "doc_selector", "groq_client", "pdf_utils", "tabla_utils", "ingesta", "bm25", "historial"]
+known-first-party = ["app", "router", "doc_selector", "groq_client", "pdf_utils", "tabla_utils", "ingesta", "bm25", "historial", "resumen"]
 
 [tool.ruff.format]
 quote-style = "double"
