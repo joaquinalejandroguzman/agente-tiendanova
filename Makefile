@@ -19,7 +19,7 @@ RUFF    := $(BIN)ruff
 MYPY    := $(BIN)mypy
 PYTEST  := $(PY) -m pytest
 
-SRC     := app.py router.py doc_selector.py groq_client.py pdf_utils.py tabla_utils.py ingesta.py bm25.py historial.py
+SRC     := app.py router.py doc_selector.py groq_client.py pdf_utils.py tabla_utils.py ingesta.py bm25.py historial.py resumen.py
 PATHS   := $(SRC) scripts tests evaluacion
 
 .DEFAULT_GOAL := help

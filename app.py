@@ -22,11 +22,17 @@ from groq_client import GroqError, chat, resolve_model
 from historial import MensajeGuardado, mensajes_para_el_modelo
 from ingesta import FORMATOS_SOPORTADOS, IngestaError, extraer_documentos
 from pdf_utils import Document, combine_documents, truncate_for_context
+from resumen import describir, icono
 from router import route
 
 # Texto secundario del tema. Vive aca y no repetido en cada bloque de HTML
 # para que un cambio de paleta no obligue a buscarlo en cuatro lugares.
 COLOR_APAGADO = "#93A1B5"
+
+# Cuánto de cada documento se guarda junto a la respuesta para poder
+# mostrarlo como evidencia. Guardar el texto completo de cada fuente en
+# cada turno haría crecer el estado de la sesión sin límite.
+MAX_EXTRACTO = 1200
 
 BASE_DIR = Path(__file__).parent
 DOCS_DIR = BASE_DIR / "corpus" / "pampa-surena"
@@ -91,54 +97,73 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------------
-# Sidebar: cara visible del producto (no infraestructura)
+# Barra lateral: el panel de documentación
+#
+# En una herramienta de consulta documental, los documentos son el producto.
+# Que la barra lateral los liste con su formato y su tamaño es lo que hace que
+# la app deje de parecer un chat genérico: quien la abre ve qué sabe el
+# sistema antes de preguntar nada.
 # ---------------------------------------------------------------------------
 EJEMPLOS = [
-    "¿Cuánto sale el bulto de yerba Rosamonte?",
-    "Entré en marzo de 2019, ¿cuántos días de vacaciones me tocan?",
-    "Me llegó una factura C de un monotributista, ¿genera crédito fiscal?",
-    "¿Queda stock de yerba Playadito?",
+    ("Lista de precios", "¿Cuánto sale el bulto de yerba Rosamonte?"),
+    ("Control de stock", "¿Queda stock de yerba Playadito?"),
+    ("Licencias", "Entré en marzo de 2019, ¿cuántos días de vacaciones me tocan?"),
+    ("Facturas", "Me llegó una factura C de un monotributista, ¿genera crédito fiscal?"),
 ]
 
-with st.sidebar:
+
+def _encabezado_lateral() -> None:
+    """Logo, nombre y estado real, en una sola línea compacta."""
     if LOGO_PATH.exists():
-        st.markdown(
-            "<div style='display:flex; align-items:center; justify-content:center; gap:10px;'>"
-            f"<img src='data:image/png;base64,{_logo_base64()}' width='32'/>"
-            "<span style='font-size:1.3rem; font-weight:700;'>Cotejo</span>"
-            "</div>",
-            unsafe_allow_html=True,
+        marca = (
+            f"<img src='data:image/png;base64,{_logo_base64()}' width='26'/>"
+            "<span style='font-size:1.15rem; font-weight:700;'>Cotejo</span>"
         )
     else:
-        st.markdown(
-            "<div style='text-align:center; font-size:1.3rem; font-weight:700;'>📑 Cotejo</div>",
-            unsafe_allow_html=True,
-        )
+        marca = "<span style='font-size:1.15rem; font-weight:700;'>📑 Cotejo</span>"
     st.markdown(
-        f"<div style='text-align:center; color:{COLOR_APAGADO}; font-size:0.85rem; "
-        f"margin-top:6px; margin-bottom:18px;'>{_estado()}</div>",
+        "<div style='display:flex; align-items:center; gap:9px; margin-bottom:2px;'>"
+        f"{marca}</div>"
+        f"<div style='color:{COLOR_APAGADO}; font-size:0.78rem; margin-bottom:20px;'>"
+        f"{_estado()}</div>",
         unsafe_allow_html=True,
     )
 
-    with st.expander("💬 Preguntas frecuentes"):
-        for ejemplo in EJEMPLOS:
-            if st.button(ejemplo, use_container_width=True):
-                st.session_state["pending_question"] = ejemplo
 
+def _titulo_de_seccion(texto: str, detalle: str = "") -> str:
+    """Encabezado de sección de la barra lateral."""
+    derecha = (
+        f"<span style='color:{COLOR_APAGADO}; font-weight:400;'>{detalle}</span>" if detalle else ""
+    )
+    return (
+        "<div style='display:flex; justify-content:space-between; align-items:baseline; "
+        "font-size:0.72rem; font-weight:700; letter-spacing:0.06em; "
+        f"margin:4px 0 8px;'><span>{texto}</span>{derecha}</div>"
+    )
+
+
+with st.sidebar:
+    _encabezado_lateral()
+
+    # Reservado acá y completado más abajo: la lista de documentos necesita
+    # que la carga ya haya ocurrido, pero tiene que dibujarse en este lugar.
+    panel_documentacion = st.container()
+
+    st.markdown(_titulo_de_seccion("AGREGAR"), unsafe_allow_html=True)
+    extras = st.file_uploader(
+        "Sumar o reemplazar con tus documentos",
+        type=list(FORMATOS_SOPORTADOS),
+        accept_multiple_files=True,
+        help="Acepta PDF y planillas en CSV. Se combinan con la documentación "
+        "de demo, o la reemplazan si desmarcás la opción de abajo.",
+        label_visibility="collapsed",
+    )
     incluir_base = st.checkbox(
         f"Usar la documentación de demo ({EMPRESA_DEMO})",
         value=True,
         help="Cinco documentos de una distribuidora ficticia: lista de precios, "
         "stock por depósito, licencias, carga de facturas y reglamento interno. "
         "Desmarcala si vas a subir tu propia documentación en su lugar.",
-    )
-    extras = st.file_uploader(
-        "Sumar o reemplazar con tus documentos",
-        type=list(FORMATOS_SOPORTADOS),
-        accept_multiple_files=True,
-        help="Acepta PDF y planillas en CSV. Se combinan con la documentación "
-        "de demo, o la reemplazan si desmarcás la opción de arriba.",
-        label_visibility="collapsed",
     )
 
 if not GROQ_API_KEY:
@@ -202,21 +227,33 @@ for f in extras or []:
     except IngestaError as e:
         st.sidebar.error(str(e))
 
-if not docs:
-    # Ni base ni extras: no hay nada que el agente pueda responder.
-    # No usamos ningun documento de respaldo silencioso — avisamos y frenamos.
-    st.sidebar.warning(
-        "Sin documentos cargados. Activá la documentación de demo o subí un archivo."
-    )
-else:
-    nombres = [nombre for nombre, _ in docs]
-    if len(nombres) > 2:
-        st.sidebar.caption(f"📄 {len(nombres)} documentos cargados")
+with panel_documentacion:
+    if not docs:
+        # Ni demo ni archivos propios: no hay nada que el agente pueda
+        # responder. No se usa ningun documento de respaldo silencioso.
+        st.markdown(_titulo_de_seccion("DOCUMENTACIÓN"), unsafe_allow_html=True)
+        st.caption("Sin documentos cargados.")
     else:
-        st.sidebar.caption(f"📄 Cargado: {' + '.join(nombres)}")
+        st.markdown(
+            _titulo_de_seccion(
+                "DOCUMENTACIÓN", f"{len(docs)} " + ("documento" if len(docs) == 1 else "documentos")
+            ),
+            unsafe_allow_html=True,
+        )
+        filas = "".join(
+            "<div style='display:flex; gap:8px; align-items:baseline; "
+            "padding:5px 0; line-height:1.35;'>"
+            f"<span style='flex:0 0 auto;'>{icono(texto)}</span>"
+            "<span style='flex:1 1 auto; min-width:0; font-size:0.86rem; "
+            f"overflow-wrap:anywhere;'>{nombre}<br/>"
+            f"<span style='color:{COLOR_APAGADO}; font-size:0.75rem;'>"
+            f"{describir(texto)}</span></span></div>"
+            for nombre, texto in docs
+        )
+        st.markdown(f"<div style='margin-bottom:14px;'>{filas}</div>", unsafe_allow_html=True)
 
 st.sidebar.markdown(
-    f"<div style='text-align:center; color:{COLOR_APAGADO}; font-size:0.8rem;'>"
+    f"<div style='color:{COLOR_APAGADO}; font-size:0.75rem; margin-top:24px;'>"
     "Joaquín A. Guzmán · 2026</div>",
     unsafe_allow_html=True,
 )
@@ -304,47 +341,57 @@ Responde siempre en español, breve, claro y cordial.
 
 
 # ---------------------------------------------------------------------------
-# UI principal
+# Área principal
+#
+# El encabezado es una barra compacta, no un logo grande centrado. Un título
+# gigante en el medio de la pantalla es lenguaje de página de presentación:
+# ninguna herramienta que se use todos los días se presenta a sí misma cada
+# vez que se abre. La marca ya está en la barra lateral.
 # ---------------------------------------------------------------------------
-col_titulo, col_reset = st.columns([5.6, 1.3], vertical_alignment="center")
-with col_titulo:
-    if LOGO_PATH.exists():
-        st.markdown(
-            "<div style='display:flex; align-items:center; justify-content:center; gap:14px;'>"
-            f"<img src='data:image/png;base64,{_logo_base64()}' width='56'/>"
-            "<h1 style='margin:0; white-space:nowrap; font-size:2.1rem;'>"
-            "Cotejo</h1></div>",
-            unsafe_allow_html=True,
-        )
-    else:
-        st.markdown(
-            "<h1 style='text-align:center; margin:0; font-size:2.1rem;'>📑 Cotejo</h1>",
-            unsafe_allow_html=True,
-        )
+col_contexto, col_reset = st.columns([5.6, 1.3], vertical_alignment="center")
+with col_contexto:
+    origen = company_name or "la documentación cargada"
     st.markdown(
-        f"<div style='text-align:center; color:{COLOR_APAGADO}; font-size:0.9rem;'>"
-        "Cada respuesta, contrastada con su fuente</div>",
+        f"<div style='font-size:0.95rem; font-weight:600; line-height:1.3;'>"
+        f"Consultá la documentación de {origen}</div>"
+        f"<div style='color:{COLOR_APAGADO}; font-size:0.8rem;'>"
+        "Cada respuesta viene con el documento del que salió</div>",
         unsafe_allow_html=True,
     )
 with col_reset:
-    if st.button("🔄 Nuevo chat", use_container_width=True):
+    if st.button(
+        "Nuevo chat", use_container_width=True, disabled=not st.session_state.get("messages")
+    ):
         st.session_state.messages = []
         st.rerun()
+
+st.divider()
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
 
 def _mostrar_fuentes(fuentes: object) -> None:
-    """Muestra de que documentos salio la respuesta.
+    """Muestra de qué documentos salió la respuesta, y qué decían.
 
-    Es la promesa del producto hecha visible. El sistema ya sabe que
-    documentos consulto para responder; no mostrarlos obligaba a confiar a
-    ciegas, que es justo lo que un empleado no puede hacer antes de cotizarle
-    a un cliente.
+    Es la promesa del producto hecha visible. El sistema ya sabe qué consultó
+    para responder; no mostrarlo obligaba a confiar a ciegas, que es justo lo
+    que un empleado no puede hacer antes de cotizarle a un cliente.
+
+    El nombre del documento solo responde "de dónde salió". El extracto
+    responde "qué decía", que es lo que permite verificar sin salir de la
+    aplicación ni abrir la planilla original.
     """
-    if isinstance(fuentes, list) and fuentes:
-        st.caption("Contrastado con: " + " · ".join(str(f) for f in fuentes))
+    if not isinstance(fuentes, list) or not fuentes:
+        return
+    nombres = " · ".join(str(f.get("nombre", "")) for f in fuentes)
+    with st.expander(f"Fuente · {nombres}"):
+        for fuente in fuentes:
+            extracto = str(fuente.get("extracto", "")).strip()
+            if not extracto:
+                continue
+            st.markdown(f"**{fuente.get('nombre', '')}**")
+            st.markdown(extracto)
 
 
 def _dibujar(msg: MensajeGuardado) -> None:
@@ -358,6 +405,29 @@ def _dibujar(msg: MensajeGuardado) -> None:
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         _dibujar(msg)
+
+if docs and not st.session_state.messages:
+    # La primera pantalla es la que decide si alguien entiende la herramienta.
+    # Un cartel que dice "no hay nada" desperdicia esa oportunidad: acá se
+    # muestra qué se puede preguntar, con ejemplos de cada documento que se
+    # disparan con un clic.
+    st.markdown(
+        f"<div style='color:{COLOR_APAGADO}; font-size:0.85rem; margin-bottom:10px;'>"
+        "Probá con alguna de estas, o escribí la tuya abajo</div>",
+        unsafe_allow_html=True,
+    )
+    for izquierda, derecha in (EJEMPLOS[:2], EJEMPLOS[2:]):
+        col_a, col_b = st.columns(2)
+        for columna, (tema, pregunta) in ((col_a, izquierda), (col_b, derecha)):
+            with columna:
+                if st.button(pregunta, use_container_width=True, key=f"ej_{tema}"):
+                    st.session_state["pending_question"] = pregunta
+                    st.rerun()
+                st.markdown(
+                    f"<div style='color:{COLOR_APAGADO}; font-size:0.72rem; "
+                    f"margin:-6px 0 12px 2px;'>{tema}</div>",
+                    unsafe_allow_html=True,
+                )
 
 if not docs:
     st.info(
@@ -400,7 +470,10 @@ if question:
                     respuesta["content"] = chat(
                         llm_messages, model=GROQ_MODEL, api_key=GROQ_API_KEY
                     )
-                    respuesta["fuentes"] = [nombre for nombre, _ in relevantes]
+                    respuesta["fuentes"] = [
+                        {"nombre": nombre, "extracto": texto[:MAX_EXTRACTO]}
+                        for nombre, texto in relevantes
+                    ]
                 except GroqError as e:
                     # Marcado como error para que no vuelva al modelo en el
                     # turno siguiente como si fuera algo que el asistente dijo.

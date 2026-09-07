@@ -26,3 +26,9 @@ primaryColor = "#337EFF"
 
 [client]
 toolbarMode = "minimal"
+
+[server]
+# Streamlit anuncia este limite en el propio cargador de archivos. Dejarlo en
+# los 200 MB que trae por defecto contradecia el techo de 5 MB que documenta
+# la especificacion, y prometia al usuario algo que el sistema iba a rechazar.
+maxUploadSize = 5
